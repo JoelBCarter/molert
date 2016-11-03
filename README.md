@@ -16,3 +16,10 @@ GOOS=linux GOARCH=amd64 go build -o molert
 * `external_url`: URL under which molert is externally reachable, alert can be silenced by this URL with curl, the command is sent with alert msg to slack
 * `listen_addr`: Molert http server listen on this address, set `alertmanager.url` to this url addr. Default "0.0.0.0:9093"
 * `slack_webhook`: slack webhook url
+
+To silence an alert, run `curl -XPOST http://www.example.com:9093/silence -H "Content-Type: application/json" -d '{"url": "THE URL GIVEN BY SLACK MESSAGE", "duration": 3600}'`. duration can be omitted which default to `silence_duration` argument passed to molert. If you want to silence an alert message forever, pass a negative integer as duration. To un-silence an alert message, pass a small positive integer (eg. 1) as duration.
+
+
+## TODO
+
+* Add a web page to view all alerts and silence/un-silence an alert

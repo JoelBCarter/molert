@@ -25,7 +25,6 @@ var (
 	silenceDuration = flag.Int64("silence_duration", 60*60, "silence duration")
 	externalURL     = flag.String("external_url", "", "URL under which molert is externally reachable.")
 	redisClient     *redis.Client
-	silenceCmd      string
 )
 
 type Alert struct {
@@ -69,7 +68,8 @@ type Payload struct {
 }
 
 type Silence struct {
-	URL string `json:"url"`
+	URL      string `json:"url"`
+	Duration int64  `json:"duration,omitempty"`
 }
 
 func init() {
@@ -85,7 +85,6 @@ func init() {
 	if err != nil {
 		log.Fatalf("failed to connect redis: %s", url)
 	}
-	silenceCmd = "```curl -XPOST" + strings.TrimSpace(*externalURL) + "/silence -H \"Content-Type: application/json\" -d '{\"url\": \"%s\"}'```"
 }
 
 func main() {
@@ -187,13 +186,17 @@ func (a *Alert) toPayloads() []Payload {
 	if description, found := a.Annotations["description"]; found {
 		attachment.Text = description
 	}
+
+	s, _ := json.Marshal(Silence{URL: a.GeneratorURL, Duration: *silenceDuration})
+	silenceCmd := fmt.Sprintf("curl -XPOST -H 'Content-Type: application/json' -d '%s'", s)
+
 	var payloads []Payload
 	if users, found := a.Labels["users"]; found {
 		for _, user := range strings.Split(strings.TrimSpace(users), ",") {
 			p := Payload{
 				Username:    "alert-bot",
 				IconEmoji:   ":loudspeaker:",
-				Text:        fmt.Sprintf(silenceCmd, a.GeneratorURL),
+				Text:        silenceCmd,
 				Attachments: []Attachment{attachment},
 				Channel:     fmt.Sprintf("@%s", strings.TrimSpace(user)),
 			}
@@ -205,7 +208,7 @@ func (a *Alert) toPayloads() []Payload {
 			p := Payload{
 				Username:    "alert-bot",
 				IconEmoji:   ":loudspeaker:",
-				Text:        fmt.Sprintf(silenceCmd, a.GeneratorURL),
+				Text:        silenceCmd,
 				Attachments: []Attachment{attachment},
 				Channel:     strings.TrimSpace(ch),
 			}
@@ -290,5 +293,16 @@ func (s *Silence) silence() {
 	if statusCode == 1 {
 		log.Printf("alert %s was silenced successfully", s.URL)
 	}
-	resp = redisClient.Cmd("EXPIRE", s.URL, *silenceDuration)
+	if s.Duration < 0 {
+		log.Printf("silenced %s forever", s.URL)
+		return // silence forever
+	}
+	if s.Duration == 0 { // silence for default duration
+		resp = redisClient.Cmd("EXPIRE", s.URL, *silenceDuration)
+		log.Printf("silenced %s for default duration", s.URL)
+		return
+	}
+	// silence for given duration, use small positive integer(eg. 1) to un-silence an alert
+	resp = redisClient.Cmd("EXPIRE", s.URL, s.Duration)
+	log.Printf("silenced %s for %d seconds", s.URL, s.Duration)
 }
