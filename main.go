@@ -188,7 +188,7 @@ func (a *Alert) toPayloads() []Payload {
 	}
 
 	s, _ := json.Marshal(Silence{URL: a.GeneratorURL, Duration: *silenceDuration})
-	silenceCmd := fmt.Sprintf("curl -XPOST -H 'Content-Type: application/json' -d '%s'", s)
+	silenceCmd := fmt.Sprintf("`curl -XPOST %s/silence -H 'Content-Type: application/json' -d '%s'`", *externalURL, s)
 
 	var payloads []Payload
 	if users, found := a.Labels["users"]; found {
@@ -293,9 +293,10 @@ func (s *Silence) silence() {
 	if statusCode == 1 {
 		log.Printf("alert %s was silenced successfully", s.URL)
 	}
-	if s.Duration < 0 {
+	if s.Duration < 0 { // silence forever
+		resp = redisClient.Cmd("PERSIST", s.URL)
 		log.Printf("silenced %s forever", s.URL)
-		return // silence forever
+		return
 	}
 	if s.Duration == 0 { // silence for default duration
 		resp = redisClient.Cmd("EXPIRE", s.URL, *silenceDuration)
