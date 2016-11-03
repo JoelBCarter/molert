@@ -72,6 +72,11 @@ type Silence struct {
 	Duration int64  `json:"duration,omitempty"`
 }
 
+type AlertStatus struct {
+	Alert Alert `json:"alert"`
+	TTL   int64 `json:"ttl"` // -1: silence forever, 0: no silence, >0: silence n seconds
+}
+
 func init() {
 	flag.Parse()
 	var err error
@@ -96,45 +101,16 @@ func main() {
 	}()
 	log.Printf("listening on %s", *listen)
 	http.HandleFunc("/", indexHandler)
+	http.HandleFunc("/list", listHandler)
 	http.HandleFunc("/silence", silenceHandler)
 	log.Fatal(http.ListenAndServe(*listen, nil))
 }
 
 func alert() {
-	r := redisClient.Cmd("SMEMBERS", "alert_urls")
-	if r.Err != nil {
-		log.Print(r.Err)
-		return
-	}
-	urls, err := r.List()
-	if err != nil {
-		log.Printf("expected alert url list from %v", r)
-		return
-	}
-	for _, url := range urls {
-		res := redisClient.Cmd("HMGET", url, "alert", "silence")
-		if res.Err != nil {
-			log.Print(res.Err)
-			continue
-		}
-		result, err := res.List()
-		if err != nil {
-			log.Printf("expected alert payload and silence from %v", res)
-			continue
-		}
-		if len(result) == 2 && result[0] == "" { // if empty alert, url should be removed from alert_urls set
-			resp := redisClient.Cmd("SREM", "alert_urls", url)
-			log.Printf("remove %s from alert_urls: %v", url, resp)
-			continue
-		}
-		if len(result) == 2 && result[1] != "true" {
-			var a Alert
-			err := json.Unmarshal([]byte(result[0]), &a)
-			if err != nil {
-				log.Printf("failed to unmarshal %s to Alert", result[0])
-				continue
-			}
-			payloads := a.toPayloads()
+	alerts := getAlerts()
+	for _, alert := range alerts {
+		if alert.TTL == 0 {
+			payloads := alert.Alert.toPayloads()
 			for _, payload := range payloads {
 				payload.send()
 			}
@@ -159,6 +135,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok"))
 }
 
+func listHandler(w http.ResponseWriter, r *http.Request) {
+	as := getAlerts()
+	json.NewEncoder(w).Encode(as)
+}
+
 func silenceHandler(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
@@ -172,6 +153,49 @@ func silenceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	s.silence()
 	w.Write([]byte("ok"))
+}
+
+func getAlerts() []*AlertStatus {
+	var as []*AlertStatus
+	resp := redisClient.Cmd("SMEMBERS", "alert_urls")
+	urls, err := resp.List()
+	if err != nil {
+		log.Printf("expected alert url list from %v", resp)
+		return as
+	}
+	for _, url := range urls {
+		resp = redisClient.Cmd("HMGET", url, "alert", "silence")
+		result, err := resp.List()
+		if err != nil {
+			log.Printf("expected alert payload and silence from %v", resp)
+			continue
+		}
+		if len(result) != 2 {
+			continue
+		}
+		if result[0] == "" { // empty alert means alert expired, url should be removed from alert_urls set
+			resp = redisClient.Cmd("SREM", "alert_urls", url)
+			log.Printf("remove %s from alert_urls: %v", url, resp)
+			continue
+		}
+		var a Alert
+		err = json.Unmarshal([]byte(result[0]), &a)
+		if err != nil {
+			log.Printf("failed to unmarshal %s to Alert", result[0])
+			continue
+		}
+		if result[1] != "true" { // not silenced
+			as = append(as, &AlertStatus{Alert: a, TTL: 0})
+			continue
+		}
+		resp = redisClient.Cmd("TTL", url)
+		ttl, err := resp.Int64()
+		if err != nil {
+			continue
+		}
+		as = append(as, &AlertStatus{Alert: a, TTL: ttl})
+	}
+	return as
 }
 
 func (a *Alert) toPayloads() []Payload {
