@@ -210,6 +210,9 @@ func (a *Alert) toPayloads() []Payload {
 	if description, found := a.Annotations["description"]; found {
 		attachment.Text = description
 	}
+	if env, found := a.Labels["env"]; found {
+		attachment.Footer = env
+	}
 
 	s, _ := json.Marshal(Silence{URL: a.GeneratorURL, Duration: *silenceDuration})
 	silenceCmd := fmt.Sprintf("`curl -XPOST %s/silence -H 'Content-Type: application/json' -d '%s'`", *externalURL, s)
